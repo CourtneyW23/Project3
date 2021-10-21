@@ -1,177 +1,197 @@
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <errno.h>
-#include <signal.h>
+#include "limits.h"
 #include "config.h"
-#include <stdbool.h>
-#include "license.h"
 
+#define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
+                                   } while (0)
+union semun {   /* Used in calls to semctl() */
+      int val;
+      struct semid_ds *buf;
+      unsigned short *array;
+      #if defined(__linux__)
+      struct seminfo *__buf;
+      #endif
+};
 
-#define MAX_CANON 20
+struct shmseg {
+   int cntr;
+   int write_complete;
+   int read_complete;
+};
 
- bool choosing[MAX_CANON];
- int number[MAX_CANON];
- int nlicense;
- int count = 0;
-
-void sighandler(int signum) {
-   printf("Caught signal %d, coming out...\n", signum);
-   exit(1);
+pid_t r_wait(int *stat_loc) {
+   pid_t retval;
+   while (((retval = wait(stat_loc)) == -1) && (errno == EINTR)) ;
+   return retval;
 }
 
-int max(int number[MAX_CANON]) {
-    int i = 0;
-    int maximum = number[0];
-    for (i = 0; i < nlicense; i++) {
-        if (maximum < number[i])
-            maximum = number[i];
-        }
-    return maximum;
-    }
-
- void process_i ( const int i )     /* ith Process */
-        {
-            do{
-                choosing[i] = true;
-                number[i] = 1 + max(number);
-                choosing[i] = false;
-                for ( int j = 0; j < nlicense; j++ )
-                {
-                    while ( choosing[j] );    // Wait while someone else is choosing
-                    while ( ( number[j] ) != 0 && (number[j],j) < (number[i],i) );
-                }
-                //critical_section();
-                number[i] = 0;
-                //remainder_section();
-	    }while ( 1 );
-}
-
-int getlicense(void){
-
-}
-
-
-int addtolicense(int n) {
-        return 0;
-}
-
-void removelicense(int n) {
-    
-}
-
-
-int logmsg(const char *msg) {
-
+void logmsg(const char *msg){
         FILE *f;
         char *log;
-	int i;
+        int i;
+        time_t t;
+        char *tm;
+
+        t = time(NULL);
+        tm = ctime(&t);
 
         f = fopen(msg, "a");
         if(!f)
         {
                 perror("Error opening file: ");
-                return -1;
+                exit(0);
         }
-
-        //Get the log to print
-        log = getlicense();
 
         if(log == NULL)
         {
                 printf("Empty Log\n");
-                return 0;
+                exit(0);
         }
+        log = tm;
 
         fprintf(f, "%s\n", log);
         fclose(f);
-        return 0;
+
+}
+
+static void handler(int sig)
+{
+   const char *name = "logfile.txt";
+   printf("Caught signal %d, coming out...\n", sig);
+   logmsg(name);
+   exit(1);
 }
 
 
-int main(int argc, char **argv)
-{
-     key_t ShmKEY;
-     int ShmID;
-     char *ShmPTR;
-     FILE *fp = stdin;
-     int i, status, nlicense, exit_status;
-     pid_t childpid;
-     pid_t grandchild;
-     
-     //signal(SIGINT, sighandler);
+void docommand ( char *cline){
+	pid_t grandchild;
 	
-     ShmKEY = ftok(".", 'x');
-     ShmID = shmget(ShmKEY, sizeof(char), IPC_CREAT | 0666);
-     if (ShmID < 0) {
-          printf("*** shmget error (client) ***\n");
-          exit(1);
-     }
+	if (grandchild == 0){
+		execlp ("./testsim", "./testsim", NULL);
+	}
+}
 
-     ShmPTR = shmat(ShmID, NULL, 0);
-     if ((int) ShmPTR == -1) {
-          printf("*** shmat error (client) ***\n");
-          exit(1);
-     }
-     printf("Client has attached the shared memory...\n");
+int main(int argc, char *argv[]){
+    int semid, shmid, nlicense, count;
+    int i, status, exit_status, n;
+    int val, opt, timer = 100;
+    union semun arg;
+    struct sembuf sop[1];
+    char *shmp;
+    char buff[MAX_CANON];
+    char **myargv;
+    pid_t child, grandchild;
+    struct sigaction sa;
+     const char *name = "logfile.txt";
 
-     while (fgets(ShmPTR, sizeof(ShmPTR), fp) != NULL) {
-   	
-	nlicense = atoi(argv[1]);
+    setbuf(stdout, NULL); 
 
-        for (i = 1; i < nlicense; i++) {	
-
-             if(nlicense > 20) {
-                printf("Please select a number less than 20\n");
-                exit(0);
-
-                }
-	     
-	     childpid = fork();
-	     
-	     if (childpid == 0) {  //for the child process:
-             //printf("Waited for child with pid %ld\n", (long)getpid());
-
-	     grandchild = fork();
-	     
-	     if (grandchild == 0) {
-               //printf("Waited for grandchild with pid %ld\n", (long)getpid());
-		execlp("./testsim", "./testsim", NULL);   
-                
-		exit(0);
-		
-                //printf("Grand child exiting\n");
-                } 
-     	    }
-     
-	while( (waitpid(childpid, &status, WNOHANG)) == 0 ){
-		//printf("Still waiting for child to return\n");
-		sleep(1); 
+    while ((opt = getopt(argc, argv, "t:")) != -1) {
+		switch (opt) {
+			case 't':
+				timer = atoi(optarg);
+				break;
+			default:
+				perror("getopt");
+				exit(1);
 		}
-		//printf("reaching the father %lu process \n",(long)getpid()); 
-		
+	}
+
+    /* Create shared memory and semaphore set containing one
+                  semaphore */
+
+     shmid = shmget(ftok(".", 200), sizeof(char), IPC_CREAT | 0666);
+     if (shmid == -1)
+         errExit("shmget");
+
+     semid = semget(ftok(".", 300), 1, IPC_CREAT | 0666);
+     if (shmid == -1)
+         errExit("shmget");
+
+    // Attach shared memory into our address space 
+
+     shmp = shmat(shmid, NULL, 0);
+     if (shmp == (void *) -1)
+         errExit("shmat");
+
+    // Initialize semaphore 0 in set with value 1 
+
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sa.sa_handler = handler;
+    if (sigaction(SIGHUP, &sa, NULL) == -1)
+        perror("sigaction");
+
+     //sigalarm();
+    arg.val=1;
+    semctl(semid,0,SETVAL,arg);
+ 
+    sop[0].sem_num=0;
+    sop[0].sem_flg=0;
+
+    signal(SIGINT, handler);
+    alarm(timer);
+    while (fgets(buff, MAX_CANON, stdin) != NULL) {
+    n = atoi(argv[2]);
+    for ( i = 0; i < n; i++){
+      child = fork();
+      if (child == 0){//i am child 
+	      sop[0].sem_op=-1;  //set semaphore, "occupied" 
+	      semop(semid,sop,1);//I lock semaphore 1
+	      printf("childpid = %d\n", getpid());
+	      sleep(1);
+	      sop[0].sem_op=1;
+	      semop(semid,sop,1);//release semaphore
+	      //docommand(shmp);
+	      if (grandchild == 0)
+              	execlp ("./testsim", "./testsim", NULL);
+	      	printf("execlp error\n");
+              	sleep(1);
+	     //alarm(timer);
+      	     //while(1);
+	       
+    }else if(child > 0){
+    //parent
+      sleep(2);
+      sop[0].sem_op = -1;
+      semop(semid,sop,1);//try to "occupy" semaphore
+      //do action
+      printf("parent = %d\n", getpid());
+      //Remove  immediately  the semaphore set
+      semctl(semid,0,IPC_RMID,arg);
+      //alarm(timer);
+      //while(1);
+      }
+    }
+      while( (waitpid(child, &status, WNOHANG)) == 0 ){
+		sleep(1);
+		}
 		if (WIFEXITED(status)){
 			exit_status = WEXITSTATUS(status);
-			//printf("Exit status from %lu was %d\n", (long)childpid, exit_status); 
 		}
 			exit(0);
-	}
-     }
-     
-     logmsg("logfile.txt");
+//	alarm(timer);
+      	while(1);
+    }
+     /* Remove shared memory and semaphore set */
+    
+     if (shmdt(shmp) == -1)
+        errExit("shmdt");
+     if (shmctl(shmid, IPC_RMID, 0) == -1)
+         errExit("shmctl");
 
-     shmdt(ShmPTR);
-     shmctl(ShmID, IPC_RMID,NULL);
-     signal(SIGINT, sighandler);
-     kill(ShmID, SIGKILL);
-     
+     kill(shmid, SIGKILL);
+    
      exit(EXIT_SUCCESS);
 
      return 0;
 }
-
